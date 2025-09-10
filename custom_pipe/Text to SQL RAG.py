@@ -22,28 +22,23 @@ class Pipe:
             description="Database type (supports 'postgres' and 'mysql', defaults to postgres)",
         )
         DB_HOST: str = Field(
-            # os.getenv("DB_HOST", "host.docker.internal")
-            "pg-388f7721-zecdata-a7e3.e.aivencloud.com",
+            os.getenv("DB_HOST", "host.docker.internal"),
             description="Database hostname",
         )
         DB_PORT: str = Field(
-            # os.getenv("DB_PORT", "5432")
-            13134,
+            os.getenv("DB_PORT", "5432"),
             description="Database port (default: 5432)",
         )
         DB_USER: str = Field(
-            # os.getenv("DB_USER", "postgres")
-            "avnadmin",
+            os.getenv("DB_USER", "postgres"),
             description="Database user to connect with. Make sure this user has permissions to the database and tables you define",
         )
         DB_PASSWORD: str = Field(
-            # os.getenv("DB_PASSWORD", "password")
-            "AVNS_gAa_gtr1Nq5jRvQvlKu",
+            os.getenv("DB_PASSWORD", "password"),
             description="Database user's password",
         )
         DB_DATABASE: str = Field(
-            # os.getenv("DB_DATABASE", "postgres")
-            "defaultdb",
+            os.getenv("DB_DATABASE", "postgres"),
             description="Database with the data you want to ask questions about",
         )
         DB_TABLE: str = Field(

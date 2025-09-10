@@ -3,7 +3,7 @@ from sqlalchemy import create_engine, text
 
 class Tools:
     def __init__(self):
-        self.connection_string = "redshift+psycopg2://analytics_api:2WTdwC0LyMTr76d6jP@host.docker.internal:5439/dev?sslmode=require"
+        self.connection_string = "dburlstring"
 
     def query_redshift(self, query: str):
         """Run a SQL query on Amazon Redshift"""

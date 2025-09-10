@@ -3130,7 +3130,7 @@ schemas = {
 # DB connection
 # --------------------------
 def get_db_connection():
-    db_url = "redshift+psycopg2://analytics_api:2WTdwC0LyMTr76d6jP@host.docker.internal:5439/dev?sslmode=require"
+    db_url = "dburlstring"
     return create_engine(db_url)
 
 
