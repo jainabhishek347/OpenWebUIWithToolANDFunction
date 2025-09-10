@@ -3130,7 +3130,10 @@ schemas = {
 # DB connection
 # --------------------------
 def get_db_connection():
-    db_url = "redshift+psycopg2://username:password@host.docker.internal:5439/dev?sslmode=require"
+    db_url = "redshift+psycopg2://analytics_api:2WTdwC0LyMTr76d6jP@host.docker.internal:5439/dev?sslmode=require"
+    logger.info(
+        "Creating DB engine for URL: %s", db_url.split("@")[-1]
+    )  # Hide credentials
     return create_engine(db_url)
 
 
@@ -3138,8 +3141,10 @@ def get_db_connection():
 # Normalize output
 # --------------------------
 def normalize_output(res):
+    logger.debug("Normalizing output: %s", type(res))
     if isinstance(res, list):
         if len(res) == 0:
+            logger.warning("Empty list returned")
             return {"error": "Empty list returned"}
         if isinstance(res[0], dict):
             return res[0]
@@ -3147,6 +3152,7 @@ def normalize_output(res):
     elif isinstance(res, dict):
         return res
     else:
+        logger.error("Unexpected output type: %s", type(res))
         return {"error": f"Unexpected output type: {type(res)}"}
 
 
@@ -3156,35 +3162,42 @@ def normalize_output(res):
 class Tools:
     def __init__(self):
         self.schemas = schemas
+        logger.info("Tools initialized with %d schemas", len(schemas))
 
     def database_permitted_tables(self) -> dict:
-        return {
-            "database": "dev",
-            "schema": "platinum",
-            "tables": list(self.schemas.keys()),
-        }
+        tables = list(self.schemas.keys())
+        logger.info("Permitted tables: %s", tables)
+        return {"database": "dev", "schema": "platinum", "tables": tables}
 
     def get_tables_schema(self, tables: list) -> dict:
+        logger.debug("Fetching schema for tables: %s", tables)
         result = {}
         for t in tables:
             key = t.split(".")[-1]
             if key in self.schemas:
                 result[key] = self.schemas[key]
-        return result if result else {"error": "No matching tables found"}
+        if not result:
+            logger.warning("No matching schemas found for: %s", tables)
+            return {"error": "No matching tables found"}
+        return result
 
     def validate_columns(self, table_name: str, requested_columns: list):
+        logger.info("Validating columns %s for table %s", requested_columns, table_name)
         schema = self.get_tables_schema([table_name]).get(table_name, {})
         allowed_columns = [c["name"] for c in schema.get("columns", [])]
         invalid = [c for c in requested_columns if c not in allowed_columns]
         if invalid:
+            logger.error("Invalid columns requested: %s", invalid)
             return {"error": f"Invalid columns requested: {invalid}"}
         return None
 
     def run_sql_query(self, query: str):
+        logger.info("Running SQL query: %s", query)
         blacklisted_keywords = ["INSERT", "DROP", "DELETE", "TRUNCATE", "ALTER"]
         upper_sql = query.upper()
         for keyword in blacklisted_keywords:
             if keyword in upper_sql and not upper_sql.startswith("SELECT"):
+                logger.warning("Blocked query due to keyword: %s", keyword)
                 return {"error": f"Query contains blacklisted keyword: {keyword}"}
 
         permitted = self.database_permitted_tables()
@@ -3196,9 +3209,12 @@ class Tools:
             table_name = after_from.split()[0].replace(";", "")
             if "." not in table_name:
                 if table_name.lower() in permitted_tables:
-                    table_name = f"{permitted_schema}.{table_name}"
-                    query = query.replace(after_from.split()[0], table_name)
+                    query = query.replace(
+                        after_from.split()[0], f"{permitted_schema}.{table_name}"
+                    )
+                    logger.info("Rewrote query with schema prefix: %s", query)
                 else:
+                    logger.error("Table %s is not permitted", table_name)
                     return {"error": f"Table {table_name} is not permitted."}
 
         engine = get_db_connection()
@@ -3206,88 +3222,90 @@ class Tools:
             with engine.connect() as conn:
                 result = conn.execute(text(query))
                 rows = [dict(row._mapping) for row in result.fetchall()]
+            logger.info("Query executed successfully, %d rows returned", len(rows))
             return {"query": query, "rows": rows}
         except Exception as e:
+            logger.exception("Error executing query")
             return {"error": str(e)}
 
 
 # --------------------------
 # Natural Language -> SQL (Safe)
 # --------------------------
-def nlp_to_sql(model_input, tools: Tools):
-    if isinstance(model_input, list):
-        model_input = model_input[0]
-    if not isinstance(model_input, dict):
-        return {"error": "Invalid input type, expected dict or non-empty list of dicts"}
+def nlp_to_sql(structured_input: dict, tools: Tools):
+    logger.info("Converting structured input to SQL: %s", structured_input)
+    table = structured_input.get("table")
+    columns = structured_input.get("columns", ["*"])
+    limit = structured_input.get("limit", 10)
+    filters = structured_input.get("filters", {})
 
-    table_name = model_input.get("table")
-    columns = model_input.get("columns", ["*"])
-    limit = model_input.get("limit", 1)
-    filters = model_input.get("filters", {})
+    if not table:
+        return {"error": "Table is missing."}
+    if not columns or columns == ["*"]:
+        return {"error": "Columns cannot be empty."}
 
-    if not table_name:
-        return {"error": "Missing 'table' in input"}
+    full_table = f"platinum.{table}"
 
-    permitted = tools.database_permitted_tables()
-    if table_name not in permitted["tables"]:
-        return {"error": f"Table {table_name} is not permitted."}
+    where_clause = ""
+    if filters:
+        where_parts = [f"{col} = '{val}'" for col, val in filters.items()]
+        where_clause = " WHERE " + " AND ".join(where_parts)
+        logger.debug("Filters applied: %s", where_parts)
 
-    validation = tools.validate_columns(table_name, columns)
-    if validation:
-        return validation
+    sql = f"SELECT {', '.join(columns)} FROM {full_table}{where_clause} LIMIT {limit};"
+    logger.info("Generated SQL: %s", sql)
 
-    cols_sql = ", ".join(columns)
-    sql = f"SELECT {cols_sql} FROM {table_name}"
+    schema_cols = [c["name"] for c in tools.schemas.get(table, {}).get("columns", [])]
+    for col in columns:
+        if col not in schema_cols:
+            logger.error("Invalid column '%s' for table '%s'", col, table)
+            return {"error": f"Invalid column '{col}' for table '{table}'"}
 
-    filter_clauses = []
-    for col, val in filters.items():
-        col_validation = tools.validate_columns(table_name, [col])
-        if col_validation:
-            return col_validation
-        if isinstance(val, str):
-            filter_clauses.append(f"{col} = '{val}'")
-        else:
-            filter_clauses.append(f"{col} = {val}")
-    if filter_clauses:
-        sql += " WHERE " + " AND ".join(filter_clauses)
-
-    sql += f" LIMIT {limit};"
-
-    result = tools.run_sql_query(sql)
-    return normalize_output(result)
+    return tools.run_sql_query(sql)
 
 
 # --------------------------
-# NEW: Safe NL wrapper for free-text queries
+# Safe NL wrapper
 # --------------------------
 def safe_nl_query(user_prompt: str, tools: Tools, default_limit: int = 10):
+    logger.info("Processing NL query: %s", user_prompt)
+
     permitted_tables = tools.database_permitted_tables()["tables"]
-    table_found = None
-    for t in permitted_tables:
-        if t in user_prompt.lower():
-            table_found = t
-            break
+    table_found = next(
+        (t for t in permitted_tables if t.lower() in user_prompt.lower()), None
+    )
     if not table_found:
+        logger.error("No permitted table found in prompt")
         return {"error": "No permitted table found in prompt."}
 
-    columns = ["customer_name"] if "customer_name" in user_prompt.lower() else ["*"]
+    schema_cols = [
+        col["name"] for col in tools.schemas.get(table_found, {}).get("columns", [])
+    ]
+    if not schema_cols:
+        logger.error("No schema found for table %s", table_found)
+        return {"error": f"No schema found for table {table_found}."}
 
-    limit = default_limit
-    m = re.search(
-        r"\b(\d+)\s*(unique)?\s*(rows|customers|records)?\b", user_prompt.lower()
-    )
-    if m:
-        limit = int(m.group(1))
+    requested_columns = [
+        col for col in schema_cols if col.lower() in user_prompt.lower()
+    ]
+    if not requested_columns:
+        logger.warning("No valid columns found in prompt")
+        return {
+            "error": "No valid columns found in prompt. Please specify valid columns."
+        }
+
+    limit_match = re.search(r"\blimit\s+(\d+)\b", user_prompt.lower())
+    limit = int(limit_match.group(1)) if limit_match else default_limit
 
     structured_input = {
         "table": table_found,
-        "columns": columns,
+        "columns": requested_columns,
         "limit": limit,
         "filters": {},
     }
 
-    result = nlp_to_sql(structured_input, tools)
-    return result
+    logger.info("Structured input built: %s", structured_input)
+    return nlp_to_sql(structured_input, tools)
 
 
 # --------------------------
