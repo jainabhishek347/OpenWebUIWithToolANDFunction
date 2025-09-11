@@ -1,6 +1,14 @@
-# ==========================
-# open_webui_tools_safe.py (Updated with NL Wrapper)
-# ==========================
+"""
+title: myToolName
+author: myName
+funding_url: [any link here will be shown behind a `Heart` button for users to show their support to you]
+version: 1.0.0
+# the version is displayed in the UI to help users keep track of updates.
+license: GPLv3
+description: a tool which will help to generate redshift sql queries based on user input and run them against a redshift database
+requirements: sqlalchemy-redshift,psycopg2-binary
+"""
+
 import logging
 from pydantic import Field
 from sqlalchemy import create_engine, text
@@ -11,6 +19,7 @@ import re
 # --------------------------
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("OpenWebUI_Tools")
+logger.setLevel(logging.DEBUG)
 
 # --------------------------
 # Table schemas
@@ -3130,6 +3139,9 @@ schemas = {
 # DB connection
 # --------------------------
 def get_db_connection():
+    """
+    Create and return a SQLAlchemy engine for the Redshift database.
+    """
     db_url = "redshift+psycopg2://analytics_api:2WTdwC0LyMTr76d6jP@host.docker.internal:5439/dev?sslmode=require"
     logger.info(
         "Creating DB engine for URL: %s", db_url.split("@")[-1]
@@ -3156,6 +3168,17 @@ def normalize_output(res):
         return {"error": f"Unexpected output type: {type(res)}"}
 
 
+import json
+
+def database_permitted_tables() -> dict:
+    """ Return the list of permitted tables in the database.
+    :param: None
+    :returns: A dictionary with database, schema, and list of permitted tables."""
+
+    tables = list(schemas.keys())
+    logger.info("Permitted tables: %s", tables)
+    return {"database": "dev", "schema": "platinum", "tables": tables}
+
 # --------------------------
 # Tools class
 # --------------------------
@@ -3164,35 +3187,30 @@ class Tools:
         self.schemas = schemas
         logger.info("Tools initialized with %d schemas", len(schemas))
 
-    def database_permitted_tables(self) -> dict:
-        tables = list(self.schemas.keys())
-        logger.info("Permitted tables: %s", tables)
-        return {"database": "dev", "schema": "platinum", "tables": tables}
-
     def get_tables_schema(self, tables: list) -> dict:
-        logger.debug("Fetching schema for tables: %s", tables)
+        """ Return the schema for the specified tables.
+        :params tables: List of table names to get the schema for.
+        :returns: A dictionary with table names as keys and their schema as values."""
+
+        logger.info("Fetching schema for tables: %s", tables)
         result = {}
         for t in tables:
             key = t.split(".")[-1]
             if key in self.schemas:
                 result[key] = self.schemas[key]
         if not result:
-            logger.warning("No matching schemas found for: %s", tables)
+            logger.info("No matching schemas found for: %s", tables)
             return {"error": "No matching tables found"}
+        logger.info("Schema for tables: %s", result)
         return result
 
-    def validate_columns(self, table_name: str, requested_columns: list):
-        logger.info("Validating columns %s for table %s", requested_columns, table_name)
-        schema = self.get_tables_schema([table_name]).get(table_name, {})
-        allowed_columns = [c["name"] for c in schema.get("columns", [])]
-        invalid = [c for c in requested_columns if c not in allowed_columns]
-        if invalid:
-            logger.error("Invalid columns requested: %s", invalid)
-            return {"error": f"Invalid columns requested: {invalid}"}
-        return None
+    def run_sql_query(self, query: str)->{str, dict}:
+        """ Run a SQL query against the database with safety checks.
+        :params query: The SQL query to run.
+        :returns: The query result as a JSON string or an error message.
+        """
 
-    def run_sql_query(self, query: str):
-        logger.info("Running SQL query: %s", query)
+        logger.info(f"Generated SQL query: {query}")
         blacklisted_keywords = ["INSERT", "DROP", "DELETE", "TRUNCATE", "ALTER"]
         upper_sql = query.upper()
         for keyword in blacklisted_keywords:
@@ -3200,7 +3218,7 @@ class Tools:
                 logger.warning("Blocked query due to keyword: %s", keyword)
                 return {"error": f"Query contains blacklisted keyword: {keyword}"}
 
-        permitted = self.database_permitted_tables()
+        permitted = database_permitted_tables()
         permitted_schema = permitted["schema"]
         permitted_tables = [t.lower() for t in permitted["tables"]]
 
@@ -3222,11 +3240,12 @@ class Tools:
             with engine.connect() as conn:
                 result = conn.execute(text(query))
                 rows = [dict(row._mapping) for row in result.fetchall()]
+            logger.info(f"Query result {rows}")
             logger.info("Query executed successfully, %d rows returned", len(rows))
-            return {"query": query, "rows": rows}
+            return {"rows": rows}
         except Exception as e:
             logger.exception("Error executing query")
-            return {"error": str(e)}
+            return {"error": "could not connect to server"}
 
 
 # --------------------------
@@ -3270,7 +3289,7 @@ def nlp_to_sql(structured_input: dict, tools: Tools):
 def safe_nl_query(user_prompt: str, tools: Tools, default_limit: int = 10):
     logger.info("Processing NL query: %s", user_prompt)
 
-    permitted_tables = tools.database_permitted_tables()["tables"]
+    permitted_tables = database_permitted_tables()["tables"]
     table_found = next(
         (t for t in permitted_tables if t.lower() in user_prompt.lower()), None
     )
@@ -3307,14 +3326,13 @@ def safe_nl_query(user_prompt: str, tools: Tools, default_limit: int = 10):
     logger.info("Structured input built: %s", structured_input)
     return nlp_to_sql(structured_input, tools)
 
-
 # --------------------------
 # Example usage
 # --------------------------
 if __name__ == "__main__":
     tools = Tools()
     user_prompt = (
-        "Help me to get 3 unique customer names from api__intermediate__orders"
+        "Help me to get 3 unique order_id names from api__intermediate__orders"
     )
     safe_result = safe_nl_query(user_prompt, tools)
     print(safe_result)
